@@ -235,7 +235,7 @@ export default function AggregationDefenseClient() {
             </div>
             <div className="bg-green-100 p-3 rounded-lg border border-green-200">
               <p className="font-semibold text-green-900 mb-1">③ Xem Kết Quả</p>
-              <p className="text-xs text-green-700">Giá trị tổng hợp = 1.0 (tốt) hay > 2.0 (bị đầu độc)?</p>
+              <p className="text-xs text-green-700">Giá trị tổng hợp = 1.0 (tốt) hay {'>'} 2.0 (bị đầu độc)?</p>
             </div>
           </div>
           <div className="mt-3 p-2 bg-yellow-50 border border-yellow-200 rounded">
