@@ -6,18 +6,14 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Play, Pause, RotateCcw, AlertTriangle, Shield, Target, ArrowRight } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import ChartLegend from '@/components/ChartLegend';
 
-// Real data from SR_MNIST experiments (n=10 workers, b=1 Byzantine)
-// These distributions represent actual label percentages in the dataset
-const HONEST_DISTRIBUTION = [7, 9, 6, 13, 10, 9, 10, 10, 13, 11]; // Honest worker's label distribution (%)
+// Real data from SR_MNIST experiments (n=10, b=1)
+const HONEST_DISTRIBUTION = [7, 9, 6, 13, 10, 9, 10, 10, 13, 11]; // Percentage for each label 0-9
 
 interface AttackPattern {
   name: string;
   description: string;
   category: string;
-  explanation: string; // Detailed explanation of attack mechanism
-  impact: string; // Expected impact on model
   transformations: Array<{ from: number; to: number; color: string; scale?: string }>;
   poisonedDist: number[];
   gradientScale?: number;
@@ -26,10 +22,8 @@ interface AttackPattern {
 const ATTACK_PATTERNS: Record<string, AttackPattern> = {
   label_flipping: {
     name: "Label Flipping Attack",
-    description: "Byzantine worker swaps specific label pairs (0↔1, 2↔3, 8↔9) to inject wrong labels into training",
+    description: "Byzantine worker swaps specific label pairs to confuse the model",
     category: "Data Poisoning",
-    explanation: "The attacker modifies training labels before sending gradients. For example, all images labeled '0' are changed to '1' and vice versa. This creates contradictory training signals that confuse the global model.",
-    impact: "Accuracy drops by 5-15% depending on aggregator robustness. Non-robust aggregators (mean) are heavily affected.",
     transformations: [
       { from: 0, to: 1, color: "bg-red-100" },
       { from: 1, to: 0, color: "bg-red-100" },
@@ -37,14 +31,12 @@ const ATTACK_PATTERNS: Record<string, AttackPattern> = {
       { from: 3, to: 2, color: "bg-orange-100" },
       { from: 8, to: 9, color: "bg-yellow-100" }
     ],
-    poisonedDist: [9, 7, 13, 6, 10, 9, 10, 10, 6, 15] // Distribution after label swapping
+    poisonedDist: [9, 7, 13, 6, 10, 9, 10, 10, 6, 15]
   },
   furthest_label_flipping: {
     name: "Furthest Label Flipping Attack",
-    description: "Byzantine worker flips ALL labels to their maximally distant labels (0→5, 1→6, etc.) - most aggressive data poisoning",
+    description: "Byzantine worker flips ALL labels to their furthest/opposite labels - more aggressive!",
     category: "Data Poisoning",
-    explanation: "Instead of simple swaps, this attack maps each label to its 'opposite' class (distance of 5). For digits 0-4, labels become 5-9 and vice versa. This maximizes confusion in the feature space.",
-    impact: "Accuracy drops by 10-25%. Even robust aggregators struggle as ALL labels are corrupted. Model may converge to random guessing (~10% accuracy).",
     transformations: [
       { from: 0, to: 5, color: "bg-red-200" },
       { from: 1, to: 6, color: "bg-red-200" },
@@ -57,30 +49,26 @@ const ATTACK_PATTERNS: Record<string, AttackPattern> = {
       { from: 8, to: 3, color: "bg-blue-200" },
       { from: 9, to: 4, color: "bg-purple-200" }
     ],
-    poisonedDist: [9, 10, 10, 10, 9, 7, 9, 6, 13, 13] // All labels redistributed
+    poisonedDist: [9, 10, 10, 10, 9, 7, 9, 6, 13, 13]
   },
   gradient_scaling: {
     name: "Gradient Scaling Attack",
-    description: "Byzantine worker multiplies gradient magnitude by 10× to dominate the aggregation process",
+    description: "Byzantine worker sends 10x larger gradients to dominate aggregation",
     category: "Model Poisoning",
-    explanation: "Instead of modifying data labels, the attacker sends artificially large gradients (10× normal magnitude). During aggregation, these large values can overwhelm honest workers' contributions, especially with simple mean aggregation.",
-    impact: "Can completely destabilize training if aggregator is non-robust. Loss may diverge to infinity. Robust aggregators (trimmed mean, CC) clip or reject these extreme values.",
     transformations: [
-      { from: 0, to: 0, color: "bg-purple-100", scale: "10×" }
+      { from: 0, to: 0, color: "bg-purple-100", scale: "10x" }
     ],
-    poisonedDist: HONEST_DISTRIBUTION, // Same label distribution, but scaled gradients
+    poisonedDist: HONEST_DISTRIBUTION, // Same distribution but scaled gradients
     gradientScale: 10
   },
   sign_flipping: {
     name: "Sign Flipping Attack",
-    description: "Byzantine worker inverts gradient signs (×−1) to push model optimization in opposite direction",
-    category: "Model Poisoning", 
-    explanation: "The attacker multiplies all gradient values by -1. While honest workers push model toward lower loss, the Byzantine worker pushes it toward HIGHER loss. This is equivalent to performing gradient descent in reverse.",
-    impact: "Training fails to converge. Model accuracy stagnates or decreases. Robust aggregators can detect and filter out gradients with opposite signs.",
+    description: "Byzantine worker flips gradient signs to push model in opposite direction",
+    category: "Model Poisoning",
     transformations: [
-      { from: 0, to: 0, color: "bg-pink-100", scale: "−1×" }
+      { from: 0, to: 0, color: "bg-pink-100", scale: "-1x" }
     ],
-    poisonedDist: HONEST_DISTRIBUTION, // Same label distribution, but negated gradients
+    poisonedDist: HONEST_DISTRIBUTION, // Same distribution but negated gradients
     gradientScale: -1
   }
 };
@@ -89,7 +77,8 @@ export default function AttackDemo() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [attackType, setAttackType] = useState<'label_flipping' | 'furthest_label_flipping' | 'gradient_scaling' | 'sign_flipping'>('label_flipping');
   const [currentStep, setCurrentStep] = useState(0);
-  const [byzantineWorker, setByzantineWorker] = useState(0); // Which worker is Byzantine
+  const [byzantineWorker, setByzantineWorker] = useState(2); // Which worker is Byzantine
+  const [displayDist, setDisplayDist] = useState<number[]>(HONEST_DISTRIBUTION); // Animated distribution
   const maxSteps = 30; // 30 steps = 10 workers × 3 steps each
 
   const attack = ATTACK_PATTERNS[attackType];
@@ -107,7 +96,17 @@ export default function AttackDemo() {
           return 0; // Loop back
         }
         
-        // Rotate Byzantine worker every 3 steps (0→1→2→...→9)
+        // Gradually apply attack transformations over first 10 steps
+        if (next > 0 && next <= 10) {
+          const progress = next / 10; // 0 to 1
+          const newDist = HONEST_DISTRIBUTION.map((val, idx) => {
+            const targetVal = attack.poisonedDist[idx];
+            return Math.round(val + (targetVal - val) * progress);
+          });
+          setDisplayDist(newDist);
+        }
+        
+        // Rotate Byzantine worker every 3 steps
         if (next % 3 === 0) {
           const rotation = Math.floor(next / 3) % 10;
           setByzantineWorker(rotation);
@@ -118,12 +117,13 @@ export default function AttackDemo() {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [isPlaying, maxSteps]);
+  }, [isPlaying, maxSteps, attack.poisonedDist]);
 
   const handleReset = () => {
     setIsPlaying(false);
     setCurrentStep(0);
-    setByzantineWorker(0);
+    setByzantineWorker(2);
+    setDisplayDist(HONEST_DISTRIBUTION); // Reset to original
   };
 
   // Calculate max value for scaling bars
@@ -142,71 +142,48 @@ export default function AttackDemo() {
         </p>
       </div>
 
-      {/* Quick Guide - NEW */}
-      <Card className="bg-gradient-to-r from-blue-50 to-purple-50 border-2 border-blue-300">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base flex items-center gap-2">
-            📖 How to Use This Page
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
-            <div className="bg-white p-3 rounded-lg border">
-              <div className="font-semibold text-blue-900 mb-2">1️⃣ Select Attack Type</div>
-              <p className="text-xs text-gray-600">
-                Choose one of 4 Byzantine attacks from the buttons below. Each attack has different impact.
-              </p>
+      {/* Quick Guide - Explanation */}
+      <Alert className="border-purple-200 bg-purple-50">
+        <AlertTriangle className="h-4 w-4 text-purple-600" />
+        <AlertDescription>
+          <p className="font-semibold text-purple-900 mb-3">📖 Hướng Dẫn Nhanh - Cách Nhận Biết Tấn Công:</p>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+            <div className="bg-blue-100 p-3 rounded-lg border border-blue-200">
+              <p className="font-semibold text-blue-900 mb-1">① Chọn Loại Tấn Công</p>
+              <p className="text-xs text-blue-700">Mỗi loại có cách phá hoại khác nhau (đổi nhãn, phóng đại gradient...)</p>
             </div>
-            <div className="bg-white p-3 rounded-lg border">
-              <div className="font-semibold text-purple-900 mb-2">2️⃣ Click Play ▶️</div>
-              <p className="text-xs text-gray-600">
-                Watch the animation - bars will turn RED showing poisoned data. Numbers show transformations (e.g., 0→1).
-              </p>
+            <div className="bg-purple-100 p-3 rounded-lg border border-purple-200">
+              <p className="font-semibold text-purple-900 mb-1">② Nhấn Play ▶️</p>
+              <p className="text-xs text-purple-700">Xem Worker 2 "Turned" → chuyển sang ATTACKING → dữ liệu BỊ ĐỘC</p>
             </div>
-            <div className="bg-white p-3 rounded-lg border">
-              <div className="font-semibold text-green-900 mb-2">3️⃣ Compare Charts</div>
-              <p className="text-xs text-gray-600">
-                <strong>Left (Blue)</strong> = Honest workers
-                <br/>
-                <strong>Right (Red)</strong> = Byzantine attacker
-              </p>
+            <div className="bg-green-100 p-3 rounded-lg border border-green-200">
+              <p className="font-semibold text-green-900 mb-1">③ So Sánh 2 Biểu Đồ</p>
+              <p className="text-xs text-green-700">TRÁI (xanh) = bình thường | PHẢI (đỏ) = bị tấn công → các cột ĐỔI MÀU ĐỎ</p>
             </div>
           </div>
-        </CardContent>
-      </Card>
+          <div className="mt-3 p-2 bg-yellow-50 border border-yellow-200 rounded">
+            <p className="text-xs text-yellow-800">
+              <strong>💡 Ý Nghĩa:</strong> Worker chạy từ TRÁI → PHẢI = worker đó bị "lật" thành Byzantine → 
+              gửi dữ liệu độc hại. Các số <span className="text-red-600 font-bold">ĐỎ</span> trên biểu đồ PHẢI = 
+              phần trăm bị thay đổi bởi tấn công (ví dụ: nhãn 0↔1, 8↔9).
+            </p>
+          </div>
+        </AlertDescription>
+      </Alert>
 
       {/* Attack Explanation */}
-      <Alert className="border-l-4" style={{ borderLeftColor: attack.category === "Data Poisoning" ? "#ef4444" : "#a855f7" }}>
+      <Alert>
         <AlertTriangle className="h-5 w-5" />
         <AlertDescription className="ml-2">
-          <div className="space-y-3">
-            <div>
-              <p className="font-semibold text-lg">{attack.name}</p>
-              <p className="text-sm mt-1">{attack.description}</p>
-            </div>
-            
-            {/* Mechanism Explanation */}
-            <div className="bg-gray-50 rounded-lg p-3 border border-gray-200">
-              <p className="text-xs font-semibold text-gray-700 mb-1">⚙️ Attack Mechanism:</p>
-              <p className="text-sm text-gray-700">{attack.explanation}</p>
-            </div>
-
-            {/* Expected Impact */}
-            <div className="bg-yellow-50 rounded-lg p-3 border border-yellow-200">
-              <p className="text-xs font-semibold text-yellow-800 mb-1">📉 Expected Impact:</p>
-              <p className="text-sm text-yellow-800">{attack.impact}</p>
-            </div>
-
-            {/* Transformations */}
-            <div>
-              <p className="text-xs font-semibold text-gray-700 mb-2">Label Transformations:</p>
-              <div className="flex flex-wrap gap-2">
-                {attack.transformations.map((t, i) => (
-                  <Badge key={i} variant="outline" className={`${t.color} px-3 py-1`}>
-                    {t.scale ? `Gradient ${t.scale}` : `${t.from} → ${t.to}`}
-                  </Badge>
-                ))}
-              </div>
+          <div className="space-y-2">
+            <p className="font-semibold text-lg">{attack.name}</p>
+            <p>{attack.description}</p>
+            <div className="flex flex-wrap gap-2 mt-3">
+              {attack.transformations.map((t, i) => (
+                <Badge key={i} variant="outline" className={`${t.color} px-3 py-1`}>
+                  Label {t.from} → {t.to}
+                </Badge>
+              ))}
             </div>
           </div>
         </AlertDescription>
@@ -215,129 +192,87 @@ export default function AttackDemo() {
       {/* Controls */}
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            🎮 Simulation Controls
-            <Badge className="ml-auto bg-blue-600">Step 1: Choose Attack</Badge>
-          </CardTitle>
+          <CardTitle>Simulation Controls</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           {/* Attack Type Selection */}
           <div className="space-y-2">
-            <label className="text-sm font-medium">Select Attack Type to Simulate:</label>
+            <label className="text-sm font-medium">Attack Type:</label>
             <div className="grid grid-cols-2 gap-3">
               <Button
                 variant={attackType === 'label_flipping' ? 'default' : 'outline'}
                 onClick={() => setAttackType('label_flipping')}
                 disabled={isPlaying}
-                className="justify-start h-auto py-3 flex-col items-start"
+                className="justify-start"
               >
+                <Target className="mr-2 h-4 w-4" />
+                Label Flipping
+              </Button>
               <Button
                 variant={attackType === 'furthest_label_flipping' ? 'default' : 'outline'}
                 onClick={() => setAttackType('furthest_label_flipping')}
                 disabled={isPlaying}
-                className="justify-start h-auto py-3 flex-col items-start"
+                className="justify-start"
               >
-                <div className="flex items-center gap-2 w-full">
-                  <AlertTriangle className="h-4 w-4" />
-                  <span className="font-semibold">Furthest Label</span>
-                </div>
-                <span className="text-xs text-left mt-1 opacity-80">
-                  Maps to opposite classes (0→5, 1→6, 2→7...)
-                </span>
+                <AlertTriangle className="mr-2 h-4 w-4" />
+                Furthest Label
               </Button>
               <Button
                 variant={attackType === 'gradient_scaling' ? 'default' : 'outline'}
                 onClick={() => setAttackType('gradient_scaling')}
                 disabled={isPlaying}
-                className="justify-start h-auto py-3 flex-col items-start"
+                className="justify-start"
               >
-                <div className="flex items-center gap-2 w-full">
-                  <ArrowRight className="h-4 w-4 rotate-45" />
-                  <span className="font-semibold">Gradient Scaling</span>
-                </div>
-                <span className="text-xs text-left mt-1 opacity-80">
-                  Sends 10× larger gradients to dominate
-                </span>
+                <ArrowRight className="mr-2 h-4 w-4 rotate-45" />
+                Gradient Scaling
               </Button>
               <Button
                 variant={attackType === 'sign_flipping' ? 'default' : 'outline'}
                 onClick={() => setAttackType('sign_flipping')}
                 disabled={isPlaying}
-                className="justify-start h-auto py-3 flex-col items-start"
+                className="justify-start"
               >
-                <div className="flex items-center gap-2 w-full">
-                  <RotateCcw className="h-4 w-4" />
-                  <span className="font-semibold">Sign Flipping</span>
-                </div>
-                <span className="text-xs text-left mt-1 opacity-80">
-                  Reverses gradient direction (×-1)
-                </span>
-              </Button>
-          {/* Playback Controls */}
-          <div className="border-t pt-4">
-            <div className="flex items-center justify-between mb-2">
-              <label className="text-sm font-medium">Animation Control:</label>
-              <Badge className="bg-purple-600">Step 2: Play Animation</Badge>
-            </div>
-            <div className="flex gap-2 items-center">
-              <Button onClick={() => setIsPlaying(!isPlaying)} className="bg-green-600 hover:bg-green-700">
-                {isPlaying ? (
-                  <>
-                    <Pause className="mr-2 h-4 w-4" />
-                    Pause
-                  </>
-                ) : (
-                  <>
-                    <Play className="mr-2 h-4 w-4" />
-                    Play Animation
-                  </>
-                )}
-              </Button>
-              <Button onClick={handleReset} variant="outline">
                 <RotateCcw className="mr-2 h-4 w-4" />
-                Reset
+                Sign Flipping
               </Button>
-              <div className="ml-auto text-sm bg-gray-100 px-3 py-1 rounded-lg">
-                <span className="font-medium">Progress:</span> {currentStep} / {maxSteps}
-                <span className="mx-2">|</span>
-                <span className="text-red-600 font-medium">Byzantine Worker: #{byzantineWorker}</span>
-              </div>
             </div>
-            {isPlaying && (
-              <div className="mt-2 text-xs text-green-600 bg-green-50 p-2 rounded border border-green-200">
-                ▶️ Animation playing... Watch the RIGHT chart turn RED as labels are poisoned!
-              </div>
-            )}
-          </div></>
+            <p className="text-xs text-muted-foreground mt-1">
+              <Badge variant="outline" className="mr-2">{attack.category}</Badge>
+              {attack.description}
+            </p>
+          </div>
+
+          {/* Playback Controls */}
+          <div className="flex gap-2 items-center">
+            <Button onClick={() => setIsPlaying(!isPlaying)}>
+              {isPlaying ? (
+                <>
+                  <Pause className="mr-2 h-4 w-4" />
+                  Pause
+                </>
               ) : (
                 <>
                   <Play className="mr-2 h-4 w-4" />
                   Play
                 </>
+              )}
+            </Button>
+            <Button onClick={handleReset} variant="outline">
+              <RotateCcw className="mr-2 h-4 w-4" />
+              Reset
+            </Button>
+            <div className="ml-auto text-sm text-muted-foreground">
+              Step: {currentStep} / {maxSteps} | Byzantine Worker: #{byzantineWorker}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Workers Visualization */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Before Attack - Honest Workers */}
-        <Card className="border-green-200 border-2">
-          <CardHeader className="bg-green-50">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Shield className="h-5 w-5 text-green-600" />
-                <CardTitle>Honest Workers (9/10)</CardTitle>
-              </div>
-              <Badge className="bg-green-600">✅ NORMAL</Badge>
-            </div>
-            <CardDescription>
-              Normal label distribution - unmodified training data
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-6">
-              {/* Label Distribution Chart */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <p className="text-sm font-medium">Label Distribution:</p>
-                  <span className="text-xs text-gray-500">Height = % of each digit (0-9)</span>
-                </div>
+        <Card className="border-green-200">
+          <CardHeader>
             <div className="flex items-center gap-2">
               <Shield className="h-5 w-5 text-green-600" />
               <CardTitle>Honest Workers (9/10)</CardTitle>
@@ -416,8 +351,8 @@ export default function AttackDemo() {
                     : 'Poisoned Distribution:'
                   }
                 </p>
-                <div className="flex items-end justify-between gap-1 h-40 bg-muted/30 p-3 rounded-lg">
-                  {attack.poisonedDist.map((value, idx) => {
+                <div className="flex items-end justify-between gap-1 h-40 bg-muted/30 p-3 rounded-lg relative">
+                  {displayDist.map((value, idx) => {
                     const heightPercent = (value / maxValue) * 100;
                     const originalValue = HONEST_DISTRIBUTION[idx];
                     const isChanged = value !== originalValue;
@@ -427,39 +362,89 @@ export default function AttackDemo() {
                       ? Math.min(heightPercent * Math.abs(attack.gradientScale) / 2, 100)
                       : heightPercent;
                     
+                    // Check if currently animating this label
+                    const isAnimating = currentStep > 0 && currentStep <= maxSteps;
+                    
                     return (
-                      <div key={idx} className="flex-1 flex flex-col items-center gap-1">
-                        <div className={`text-xs font-medium ${
+                      <div key={idx} className="flex-1 flex flex-col items-center gap-1 relative">
+                        {/* BEFORE value (crossed out if changed) */}
+                        {isChanged && isAnimating && (
+                          <div className="absolute -top-6 text-[10px] text-gray-400 line-through">
+                            {originalValue}%
+                          </div>
+                        )}
+                        
+                        {/* AFTER value (highlighted if changed) */}
+                        <div className={`text-xs font-medium transition-all ${
                           attack.gradientScale 
                             ? 'text-purple-600 font-bold' 
-                            : isChanged ? 'text-red-600 font-bold' : 'text-muted-foreground'
+                            : isChanged ? 'text-red-600 font-bold animate-pulse' : 'text-muted-foreground'
                         }`}>
                           {attack.gradientScale 
                             ? `${(value * Math.abs(attack.gradientScale)).toFixed(0)}%`
                             : `${value}%`
                           }
                         </div>
+                        
+                        {/* Bar with animation */}
                         <div 
-                          className={`w-full rounded-t transition-all duration-300 ${
+                          className={`w-full rounded-t transition-all duration-500 ${
                             attack.gradientScale && attack.gradientScale < 0
                               ? 'bg-pink-500'
                               : attack.gradientScale && attack.gradientScale > 1
                               ? 'bg-purple-500'
                               : isChanged 
-                              ? 'bg-red-500' 
+                              ? 'bg-red-500 shadow-lg' 
                               : 'bg-orange-300'
-                          }`}
+                          } ${isChanged && isAnimating ? 'animate-bounce' : ''}`}
                           style={{ height: `${displayHeight}%` }}
                         />
-                        <div className={`text-xs font-medium ${
-                          attack.gradientScale ? 'bg-purple-200 px-1 rounded' : isChanged ? 'bg-yellow-200 px-1 rounded' : ''
+                        
+                        {/* Label number with highlight */}
+                        <div className={`text-xs font-medium transition-all ${
+                          attack.gradientScale ? 'bg-purple-200 px-1 rounded' : isChanged ? 'bg-yellow-300 px-2 rounded font-bold' : ''
                         }`}>
                           {idx}
                         </div>
+                        
+                        {/* Change arrow indicator */}
+                        {isChanged && isAnimating && !attack.gradientScale && (
+                          <div className="absolute -bottom-8 text-xs text-red-600 font-bold">
+                            {originalValue > value ? '↓' : '↑'}
+                          </div>
+                        )}
                       </div>
                     );
                   })}
                 </div>
+                
+                {/* Legend explaining the changes */}
+                {currentStep > 0 && (
+                  <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg text-xs">
+                    <p className="font-semibold text-red-900 mb-2">🔴 Những gì đã thay đổi:</p>
+                    <div className="grid grid-cols-1 gap-2">
+                      {attack.transformations.map((t, i) => (
+                        <div key={i} className={`p-2 ${t.color} rounded border`}>
+                          {t.scale ? (
+                            <span className="font-mono">
+                              Gradient ×{t.scale}
+                            </span>
+                          ) : (
+                            <div className="font-mono text-xs">
+                              <span className="font-semibold">Nhãn {t.from}</span> ({HONEST_DISTRIBUTION[t.from]}%) 
+                              <span className="text-red-600 mx-1">→ bị đổi thành →</span> 
+                              <span className="font-semibold">Nhãn {t.to}</span>
+                              <div className="text-[10px] text-gray-600 mt-1">
+                                ⚠️ Ảnh hưởng: Cột {t.from} giảm, cột {t.to} tăng lên
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                
                 <div className="text-center text-xs text-muted-foreground mt-2">
                   {attack.gradientScale ? 'Gradient Components' : 'Labels (0-9)'}
                 </div>

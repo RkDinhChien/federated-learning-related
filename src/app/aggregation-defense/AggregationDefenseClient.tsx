@@ -219,28 +219,59 @@ export default function AggregationDefenseClient() {
         </p>
       </div>
 
+      {/* Quick Guide */}
+      <Alert className="border-purple-200 bg-gradient-to-r from-purple-50 to-pink-50">
+        <Info className="h-5 w-5 text-purple-600" />
+        <AlertDescription>
+          <p className="font-semibold text-purple-900 mb-3">📖 Hướng Dẫn Nhanh - Cách Phòng Thủ Chống Tấn Công:</p>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+            <div className="bg-blue-100 p-3 rounded-lg border border-blue-200">
+              <p className="font-semibold text-blue-900 mb-1">① Chọn Aggregator</p>
+              <p className="text-xs text-blue-700">5 phương pháp: Mean (yếu) → FABA (mạnh nhất)</p>
+            </div>
+            <div className="bg-purple-100 p-3 rounded-lg border border-purple-200">
+              <p className="font-semibold text-purple-900 mb-1">② Nhấn Play ▶️</p>
+              <p className="text-xs text-purple-700">Worker Byzantine (đỏ) gửi gradient ×5 để phá</p>
+            </div>
+            <div className="bg-green-100 p-3 rounded-lg border border-green-200">
+              <p className="font-semibold text-green-900 mb-1">③ Xem Kết Quả</p>
+              <p className="text-xs text-green-700">Giá trị tổng hợp = 1.0 (tốt) hay > 2.0 (bị đầu độc)?</p>
+            </div>
+          </div>
+          <div className="mt-3 p-2 bg-yellow-50 border border-yellow-200 rounded">
+            <p className="text-xs text-yellow-800">
+              <strong>💡 Ý Nghĩa:</strong> <span className="font-mono bg-white px-1">Mean</span> = trung bình thông thường (dễ bị lừa). 
+              <span className="font-mono bg-white px-1 mx-1">Trimmed Mean</span> = bỏ giá trị cực đoan. 
+              <span className="font-mono bg-white px-1 mx-1">CC</span> = cắt gradient vượt ngưỡng. 
+              <span className="font-mono bg-white px-1 mx-1">LFighter</span> = dùng loss để phát hiện. 
+              <span className="font-mono bg-white px-1 mx-1">FABA</span> = lặp lại loại outlier.
+            </p>
+          </div>
+        </AlertDescription>
+      </Alert>
+
       {/* Key Concept Alert */}
       <Alert className="border-blue-200 bg-blue-50 rounded-2xl">
         <Info className="h-5 w-5 text-blue-600" />
         <AlertDescription className="ml-2">
           <div className="space-y-3">
-            <p className="font-semibold text-base text-blue-900">📚 How Byzantine-Robust Aggregation Works:</p>
+            <p className="font-semibold text-base text-blue-900">📚 Cách Hoạt Động Của Aggregation Phòng Thủ:</p>
             
             <div className="space-y-2 text-sm text-blue-800">
-              <p><strong>Scenario:</strong> 10 workers (9 honest + 1 Byzantine) send gradient updates to Parameter Server</p>
+              <p><strong>Tình huống:</strong> 10 workers (9 trung thực + 1 Byzantine) gửi gradient updates lên Parameter Server</p>
               
-              <p><strong>Byzantine Attack:</strong> Malicious worker sends <span className="bg-red-200 px-2 py-0.5 rounded font-mono">5× larger gradients</span> to poison the global model</p>
+              <p><strong>Tấn Công Byzantine:</strong> Worker độc hại gửi <span className="bg-red-200 px-2 py-0.5 rounded font-mono">gradient ×5 lớn hơn</span> để đầu độc model toàn cục</p>
               
-              <p><strong>Robust Aggregation:</strong> Instead of simple averaging, robust methods detect and neutralize malicious updates:</p>
+              <p><strong>Aggregation Mạnh Mẽ:</strong> Thay vì tính trung bình đơn giản, các phương pháp robust phát hiện và vô hiệu hóa updates độc hại:</p>
               <ul className="list-disc list-inside ml-4 space-y-1">
-                <li><strong>Trimmed Mean:</strong> Removes 20% extreme values (2 smallest + 2 largest)</li>
-                <li><strong>Coordinate Clipping (CC):</strong> Clips values exceeding τ=0.3 from median</li>
-                <li><strong>LFighter:</strong> Filters workers with abnormal loss patterns</li>
-                <li><strong>FABA:</strong> Iteratively removes outliers until convergence</li>
+                <li><strong>Trimmed Mean:</strong> Loại bỏ 20% giá trị cực đoan (2 nhỏ nhất + 2 lớn nhất)</li>
+                <li><strong>Coordinate Clipping (CC):</strong> Cắt giá trị vượt τ=0.3 so với median</li>
+                <li><strong>LFighter:</strong> Lọc workers có loss bất thường</li>
+                <li><strong>FABA:</strong> Lặp lại loại outliers cho đến khi hội tụ</li>
               </ul>
               
               <p className="bg-green-100 px-3 py-2 rounded-lg border border-green-200">
-                <strong>Result:</strong> Model accuracy maintained at <span className="font-mono font-bold">~85-90%</span> vs <span className="font-mono font-bold text-red-600">~65-70%</span> with vulnerable mean aggregation
+                <strong>Kết Quả:</strong> Độ chính xác model duy trì <span className="font-mono font-bold">~85-90%</span> vs <span className="font-mono font-bold text-red-600">~65-70%</span> với mean yếu
               </p>
             </div>
           </div>
@@ -250,12 +281,15 @@ export default function AggregationDefenseClient() {
       {/* Controls */}
       <Card>
         <CardHeader>
-          <CardTitle>Simulation Controls</CardTitle>
+          <CardTitle className="flex items-center gap-2">
+            🎮 Điều Khiển Mô Phỏng
+            <Badge className="ml-auto bg-blue-600">Bước 1: Chọn Aggregator</Badge>
+          </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           {/* Aggregator Selection */}
           <div className="space-y-2">
-            <label className="text-sm font-medium">Select Aggregator:</label>
+            <label className="text-sm font-medium">Chọn Phương Pháp Aggregation:</label>
             <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
               {Object.entries(AGGREGATORS).map(([key, agg]) => {
                 const AggIcon = agg.icon;
