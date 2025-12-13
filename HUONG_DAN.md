@@ -1,8 +1,3 @@
-# Hướng Dẫn Sử Dụng - Federated Learning Visualizer
-
-## 🎉 Chào Mừng!
-
-Web application của bạn đã được hiện đại hóa thành công sang **Next.js 15** - framework React tiên tiến nhất hiện nay!
 
 ---
 
