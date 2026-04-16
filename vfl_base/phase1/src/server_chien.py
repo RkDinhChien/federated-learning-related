@@ -177,6 +177,10 @@ class ServerCoordinator:
         """
         self.bottom_model.train()
         self.top_model.train()
+
+        x_server = x_server.to(self.device)
+        o_client = o_client.to(self.device)
+        labels = labels.to(self.device)
         
         # Server computes its own embedding
         self.o_server = self.bottom_model(x_server)

@@ -7,7 +7,7 @@ Does NOT have access to labels.
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torchvision.models import resnet18
+from torchvision.models import ResNet18_Weights, resnet18
 
 
 class BottomModel(nn.Module):
@@ -26,8 +26,8 @@ class BottomModel(nn.Module):
         super(BottomModel, self).__init__()
         self.embedding_dim = embedding_dim
         
-        # Load pretrained ResNet-18
-        resnet = resnet18(pretrained=True)
+        # Load weights ResNet-18
+        resnet = resnet18(weights=ResNet18_Weights.DEFAULT)
         
         # Modify first conv layer to accept 3 × 32 × 16 input
         # Original: Conv2d(3, 64, kernel_size=7, stride=2, padding=3)
@@ -124,11 +124,14 @@ class ClientWorker:
                       with requires_grad=True for backward pass
         """
         self.model.train()
+        x_client = x_client.to(self.device)
         o_client = self.model(x_client)
         
         # Ensure gradient tracking is enabled
         if not o_client.requires_grad:
             o_client.requires_grad_(True)
+
+        self.current_embedding = o_client # Store current embedding for backward pass
         
         return o_client
     
@@ -142,7 +145,7 @@ class ClientWorker:
         """
         # Set the gradient of embeddings from Server's backward pass
         # We need to backprop through the embedding to update Client's weights
-        
+        gradient_from_server = gradient_from_server.to(self.device)
         # Zero gradients
         self.optimizer.zero_grad()
         
@@ -154,7 +157,7 @@ class ClientWorker:
         # Update Client weights
         self.optimizer.step()
         
-        print(f"[ClientWorker] Backward pass completed, weights updated")
+        #print(f"[ClientWorker] Backward pass completed, weights updated")
     
     def set_current_embedding(self, embedding):
         """Store current embedding for backward pass"""
