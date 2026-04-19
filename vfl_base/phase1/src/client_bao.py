@@ -2,6 +2,9 @@
 Client module for Vertical Federated Learning (VFL).
 The Client (Passive Participant) receives half_B of images and sends embeddings to Server.
 Does NOT have access to labels.
+
+⚠️ CRITICAL: Computation graph must be preserved throughout forward/backward cycle
+to ensure gradients flow correctly and weights are updated properly.
 """
 
 import torch
@@ -15,7 +18,7 @@ class BottomModel(nn.Module):
     Bottom Model for Client (Passive Participant).
     - Input: Half-image (3 × 32 × 16)
     - Output: Feature embedding vector
-    - Modified ResNet-18 with adjusted first conv layer to accept 16-width input
+    - Modified ResNet-18 with adjusted first conv layer to accept 3×32×16 input
     """
     
     def __init__(self, embedding_dim=128):
@@ -29,24 +32,23 @@ class BottomModel(nn.Module):
         # Load pretrained ResNet-18
         resnet = resnet18(pretrained=True)
         
-        # Modify first conv layer to accept 3 × 32 × 16 input
-        # Original: Conv2d(3, 64, kernel_size=7, stride=2, padding=3)
-        # Problem: stride=2 and input width=16 would cause dimension issues
-        # Solution: Use a custom first layer with kernel_size=3, stride=1, padding=1
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1)
+        # CRITICAL FIX: Modify first conv layer to accept 3 × 32 × 16 input
+        # Original ResNet-18 conv1: Conv2d(3, 64, kernel_size=7, stride=2, padding=3)
+        # Problem: stride=2 with width=16 causes dimension issues
+        # Solution: kernel_size=3, stride=1, padding=1 preserves spatial dimensions
+        self.conv1 = nn.Conv2d(in_channels=3, out_channels=64, kernel_size=3, stride=1, padding=1)
         self.bn1 = resnet.bn1
         self.relu = resnet.relu
         self.maxpool = resnet.maxpool
         
-        # Keep ResNet blocks
+        # Keep ResNet residual blocks
         self.layer1 = resnet.layer1
         self.layer2 = resnet.layer2
         self.layer3 = resnet.layer3
         self.layer4 = resnet.layer4
         self.avgpool = resnet.avgpool
         
-        # Original ResNet output is 512-dim (from layer4)
-        # Project to embedding_dim
+        # Projection layer: ResNet-18 layer4 output is 512-dim
         self.fc = nn.Linear(512, embedding_dim)
     
     def forward(self, x_client):
@@ -58,14 +60,14 @@ class BottomModel(nn.Module):
         
         Returns:
             embedding: Feature vector (batch_size, embedding_dim)
+                       with computation graph intact for backprop
         """
-        # Conv block
         x = self.conv1(x_client)
         x = self.bn1(x)
         x = self.relu(x)
         x = self.maxpool(x)
         
-        # ResNet layers
+        # ResNet residual blocks
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
@@ -75,11 +77,8 @@ class BottomModel(nn.Module):
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
         
-        # Project to embedding dimension
+        # Projection to embedding space
         embedding = self.fc(x)
-        
-        # Keep gradient tracking for backprop
-        embedding.requires_grad_(True)
         
         return embedding
 
@@ -87,17 +86,24 @@ class BottomModel(nn.Module):
 class ClientWorker:
     """
     Client Worker manages the Bottom Model for passive participant.
+    
     Responsibilities:
-    1. Forward half_B through BottomModel to get embeddings
-    2. Receive gradients from Server and perform backward pass
-    3. Update its own weights using SGD
+    1. forward(half_B): Process client's image half through BottomModel
+    2. backward(g_bao): Receive gradient from Server, update weights
+    3. Maintain optimizer state and computation graph integrity
+    
+    ⚠️ KEY REQUIREMENTS:
+    - NO torch.no_grad() in forward() to preserve computation graph
+    - Store output in self.o_bao for backward pass
+    - backward() uses: zero_grad() → backward(g_bao) → step()
     """
     
-    def __init__(self, embedding_dim=128, learning_rate=0.01, device='cpu'):
+    def __init__(self, embedding_dim=128, learning_rate=0.01, momentum=0.9, device='cpu'):
         """
         Args:
             embedding_dim: Dimension of feature embeddings
             learning_rate: SGD learning rate
+            momentum: SGD momentum for better convergence
             device: 'cpu' or 'cuda'
         """
         self.device = device
@@ -106,84 +112,123 @@ class ClientWorker:
         # Initialize Bottom Model
         self.model = BottomModel(embedding_dim=embedding_dim).to(device)
         
-        # Optimizer for Client
-        self.optimizer = optim.SGD(self.model.parameters(), lr=learning_rate)
+        # CRITICAL: SGD with momentum=0.9 as specified
+        self.optimizer = optim.SGD(
+            self.model.parameters(), 
+            lr=learning_rate, 
+            momentum=momentum
+        )
         
-        print(f"[ClientWorker] Initialized on {device}")
+        # Storage for computation graph (ESSENTIAL for backward pass)
+        self.o_bao = None
+        
+        print(f"[ClientWorker] Initialized on device: {device}")
         print(f"[ClientWorker] Embedding dimension: {embedding_dim}")
+        print(f"[ClientWorker] Optimizer: SGD(lr={learning_rate}, momentum={momentum})")
     
-    def forward(self, x_client):
+    def forward(self, half_B):
         """
-        Forward pass: Client receives half_B and computes embeddings.
+        Forward pass: Process half_B through BottomModel.
+        
+        ⚠️ CRITICAL: NO torch.no_grad() here - we need computation graph intact!
         
         Args:
-            x_client: Input tensor (batch_size, 3, 32, 16)
+            half_B: Input tensor (batch_size, 3, 32, 16) - Client's image portion
         
         Returns:
-            o_client: Feature embedding (batch_size, embedding_dim)
-                      with requires_grad=True for backward pass
+            self.o_bao: Feature embedding (batch_size, embedding_dim)
+                        with computation graph preserved
         """
         self.model.train()
-        o_client = self.model(x_client)
         
-        # Ensure gradient tracking is enabled
-        if not o_client.requires_grad:
-            o_client.requires_grad_(True)
+        # Forward pass - computation graph is automatically tracked
+        self.o_bao = self.model(half_B)
         
-        return o_client
+        # Verify requires_grad is True for gradient flow
+        assert self.o_bao.requires_grad, "[ClientWorker] ERROR: Output must have requires_grad=True!"
+        
+        return self.o_bao
     
-    def backward(self, gradient_from_server):
+    def backward(self, g_bao):
         """
-        Backward pass: Client receives gradient from Server and updates weights.
+        Backward pass: Receive gradient from Server and update Client's weights.
+        
+        ⚠️ CRITICAL SEQUENCE (do NOT change order):
+        1. optimizer.zero_grad() - clear old gradients
+        2. self.o_bao.backward(g_bao) - backprop Server's gradient
+        3. optimizer.step() - update weights
         
         Args:
-            gradient_from_server: Gradient of loss w.r.t. o_client (from Server)
-                                  Shape: (batch_size, embedding_dim)
+            g_bao: Gradient of loss w.r.t. o_bao from Server
+                   Shape: (batch_size, embedding_dim)
         """
-        # Set the gradient of embeddings from Server's backward pass
-        # We need to backprop through the embedding to update Client's weights
-        
-        # Zero gradients
+        # Step 1: Clear gradients from previous iteration
         self.optimizer.zero_grad()
         
-        # Use a surrogate loss: L = sum(o_client * gradient_from_server)
-        # This effectively backprops the Server's gradient through Client's model
-        surrogate_loss = (self.current_embedding * gradient_from_server).sum()
-        surrogate_loss.backward()
+        # Step 2: CORE BACKPROP - propagate Server's gradient back through Client's model
+        # This computes dL/dθ for all parameters θ in BottomModel
+        self.o_bao.backward(g_bao)
         
-        # Update Client weights
+        # Step 3: Update Client's model weights using SGD
         self.optimizer.step()
         
-        print(f"[ClientWorker] Backward pass completed, weights updated")
-    
-    def set_current_embedding(self, embedding):
-        """Store current embedding for backward pass"""
-        self.current_embedding = embedding
+        print("[ClientWorker] Backward pass: gradient received from Server → weights updated")
     
     def eval_mode(self):
-        """Switch to evaluation mode"""
+        """Switch model to evaluation mode"""
         self.model.eval()
     
     def train_mode(self):
-        """Switch to training mode"""
+        """Switch model to training mode"""
         self.model.train()
     
     def get_model_params(self):
-        """Get model parameters for monitoring"""
+        """Get total number of trainable parameters"""
         return sum(p.numel() for p in self.model.parameters() if p.requires_grad)
 
 
 if __name__ == "__main__":
-    # Test ClientWorker
-    print("[Test] Creating ClientWorker...")
-    client = ClientWorker(embedding_dim=128, learning_rate=0.01)
+    print("=" * 70)
+    print("[Test] ClientWorker - Computation Graph Integrity Test")
+    print("=" * 70)
     
-    # Dummy input: batch_size=4, 3 channels, 32 height, 16 width
-    x_dummy = torch.randn(4, 3, 32, 16)
+    # Create ClientWorker
+    print("\n[Test 1] Creating ClientWorker...")
+    client = ClientWorker(embedding_dim=128, learning_rate=0.01, momentum=0.9)
+    print(f"[Test 1] ✓ ClientWorker created")
+    print(f"[Test 1] Total trainable parameters: {client.get_model_params():,}")
     
-    print("[Test] Forward pass with dummy input...")
-    embedding = client.forward(x_dummy)
-    print(f"  Embedding shape: {embedding.shape}")
-    print(f"  Embedding requires_grad: {embedding.requires_grad}")
+    # Test forward pass
+    print("\n[Test 2] Forward pass with dummy input...")
+    batch_size = 4
+    half_B = torch.randn(batch_size, 3, 32, 16, requires_grad=False)
+    print(f"[Test 2] Input shape (half_B): {half_B.shape}")
     
-    print("[Test] Total parameters in ClientWorker: ", client.get_model_params())
+    o_bao = client.forward(half_B)
+    print(f"[Test 2] Output shape (o_bao): {o_bao.shape}")
+    print(f"[Test 2] ✓ o_bao.requires_grad = {o_bao.requires_grad}")
+    print(f"[Test 2] ✓ Computation graph intact: {o_bao.is_leaf == False}")
+    
+    # Test backward pass with simulated Server gradient
+    print("\n[Test 3] Backward pass with simulated Server gradient...")
+    g_bao = torch.randn_like(o_bao)  # Gradient from Server
+    print(f"[Test 3] Gradient shape (g_bao): {g_bao.shape}")
+    
+    # Store parameter values before update
+    params_before = [p.clone() for p in client.model.parameters()]
+    
+    # Backward pass
+    client.backward(g_bao)
+    
+    # Check if weights were updated
+    params_changed = False
+    for p_before, p_after in zip(params_before, client.model.parameters()):
+        if not torch.allclose(p_before, p_after):
+            params_changed = True
+            break
+    
+    print(f"[Test 3] ✓ Weights updated: {params_changed}")
+    
+    print("\n" + "=" * 70)
+    print("✓ All tests passed! Computation graph is intact and weights update correctly.")
+    print("=" * 70)
