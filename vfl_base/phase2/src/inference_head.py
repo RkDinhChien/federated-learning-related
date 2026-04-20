@@ -11,7 +11,7 @@ from torch.distributions import Beta
 from torch.utils.data import DataLoader, Subset, TensorDataset
 import numpy as np
 from typing import Tuple, Optional
-
+from PIL import Image
 
 # ──────────────────────────────────────────────────────────────
 #  0. VFL Image Split Helper
@@ -42,6 +42,94 @@ def _split_client_half(images: torch.Tensor, side: str = "right") -> torch.Tenso
     else:
         raise ValueError(f"side must be 'right' or 'left', got '{side}'")
 
+def _validate_and_convert_image(img, expected_shape=(3, 32, 32)):
+    """
+    Strictly validate and convert images to torch.Tensor (CHW format).
+    
+    Args:
+        img: Input image (torch.Tensor, PIL.Image, or np.ndarray)
+        expected_shape: Expected output shape (C, H, W), default (3, 32, 32)
+    
+    Returns:
+        torch.Tensor in shape (C, H, W) with values in [0, 1]
+    
+    Raises:
+        TypeError: If image format is not supported
+        ValueError: If shape validation fails
+    """
+    # Case 1: Already a tensor — validate and return
+    if isinstance(img, torch.Tensor):
+        if img.ndim != 3:
+            raise ValueError(
+                f"Expected tensor shape (C, H, W), got {img.shape}. "
+                f"Dataset must return tensors in CHW format."
+            )
+        # Ensure values are in [0, 1]
+        if img.max() > 1.0:
+            img = img.float() / 255.0
+        if img.shape != expected_shape:
+            raise ValueError(
+                f"Shape mismatch: expected {expected_shape}, got {img.shape}"
+            )
+        return img
+    
+    # Case 2: PIL Image — convert properly with HWC → CHW
+    elif isinstance(img, Image.Image):
+        # Convert to numpy first (HWC format)
+        img_array = np.array(img, dtype=np.float32)
+        
+        # Handle grayscale (H, W) → (H, W, 3)
+        if img_array.ndim == 2:
+            img_array = np.stack([img_array] * 3, axis=-1)
+        
+        # Scale [0, 255] → [0, 1]
+        if img_array.max() > 1.0:
+            img_array = img_array / 255.0
+        
+        # Convert HWC → CHW
+        img_tensor = torch.from_numpy(img_array).permute(2, 0, 1).float()
+        
+        if img_tensor.shape != expected_shape:
+            raise ValueError(
+                f"Shape mismatch: expected {expected_shape}, got {img_tensor.shape}. "
+                f"Dataset preprocessing is inconsistent."
+            )
+        return img_tensor
+    
+    # Case 3: NumPy array — similar to PIL
+    elif isinstance(img, np.ndarray):
+        img_array = img.astype(np.float32)
+        
+        # Determine if HWC or CHW
+        if img_array.ndim == 3:
+            if img_array.shape[0] in [1, 3, 4]:  # Likely CHW (channels first)
+                img_tensor = torch.from_numpy(img_array).float()
+            else:  # Likely HWC (channels last)
+                # Scale [0, 255] → [0, 1]
+                if img_array.max() > 1.0:
+                    img_array = img_array / 255.0
+                # Convert HWC → CHW
+                img_tensor = torch.from_numpy(img_array).permute(2, 0, 1).float()
+        elif img_array.ndim == 2:  # Grayscale (H, W)
+            # Scale [0, 255] → [0, 1]
+            if img_array.max() > 1.0:
+                img_array = img_array / 255.0
+            # Add channel dimension → (1, H, W)
+            img_tensor = torch.from_numpy(img_array).unsqueeze(0).float()
+        else:
+            raise ValueError(f"Unexpected image shape: {img_array.shape}")
+        
+        if img_tensor.shape != expected_shape:
+            raise ValueError(
+                f"Shape mismatch: expected {expected_shape}, got {img_tensor.shape}"
+            )
+        return img_tensor
+    
+    else:
+        raise TypeError(
+            f"Unsupported image format: {type(img).__name__}. "
+            f"Dataset must return torch.Tensor, PIL.Image, or np.ndarray"
+        )
 
 # ──────────────────────────────────────────────────────────────
 #  1. InferenceHead
@@ -250,16 +338,14 @@ def generate_auxiliary_labels(
     unlabeled_indices = all_indices[num_labels:]
 
     def _collect(indices):
-        """Stack individual (image, label) samples into batched tensors."""
-        imgs, labels = [], []
-        for idx in indices:
-            img, lbl = dataset[int(idx)]
-            # img may already be a Tensor (after transforms) or a PIL Image
-            if not isinstance(img, torch.Tensor):
-                img = torch.tensor(np.array(img), dtype=torch.float32)
-            imgs.append(img)
-            labels.append(int(lbl))
-        return torch.stack(imgs), torch.tensor(labels, dtype=torch.long)
+    """Stack individual (image, label) samples into batched tensors."""
+    imgs, labels = [], []
+    for idx in indices:
+        img, lbl = dataset[int(idx)]
+        img = _validate_and_convert_image(img, expected_shape=(3, 32, 32))  # ✅ FIXED
+        imgs.append(img)
+        labels.append(int(lbl))
+    return torch.stack(imgs), torch.tensor(labels, dtype=torch.long)
 
     print(f"[generate_auxiliary_labels] Collecting {num_labels} labeled samples …")
     images_X, labels_X = _collect(labeled_indices)
