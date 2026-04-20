@@ -51,7 +51,7 @@ def train_epoch(epoch, client, server, train_loader, device):
         # Step 1: Client Forward
         # ==========================================
         o_client = client.forward(half_B)
-        client.set_current_embedding(o_client.detach())
+
         
         # ==========================================
         # Step 2: Server Forward and Loss
