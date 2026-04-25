@@ -18,25 +18,30 @@ from PIL import Image
 # ──────────────────────────────────────────────────────────────
 
 def _split_client_half(images: torch.Tensor, side: str = "right") -> torch.Tensor:
+    """
+    Nhan vao half_B (B, 3, 32, 16) hoac full image (B, 3, 32, 32).
+    - Neu da la half (width<=16): tra ve nguyen khong cat
+    - Neu la full image (width=32): cat theo side
+    """
     if images.dim() == 3:
         images = images.unsqueeze(0)
+    # Da la half_B roi, khong cat them
+    if images.shape[-1] <= 16:
+        return images
+    # Full image -> cat
     if side == "right":
         return images[:, :, :, 16:]
-    elif side == "left":
-        return images[:, :, :, :16]
     else:
-        raise ValueError(f"side must be 'right' or 'left', got '{side}'")
+        return images[:, :, :, :16]
 
 
 def _validate_and_convert_image(img, expected_shape=(3, 32, 32)):
     if isinstance(img, torch.Tensor):
         if img.ndim != 3:
             raise ValueError(f"Expected tensor shape (C, H, W), got {img.shape}.")
-        if img.max() > 1.0:
-            img = img.float() / 255.0
-        if img.shape != expected_shape:
-            raise ValueError(f"Shape mismatch: expected {expected_shape}, got {img.shape}")
-        return img
+        # KHONG chia /255 neu anh da duoc normalize (co gia tri am hoac > 1.0)
+        # Anh tu VFLCIFARDataset da qua Normalize() nen co range ~[-2.4, 2.7]
+        return img.float()
     elif isinstance(img, Image.Image):
         img_array = np.array(img, dtype=np.float32)
         if img_array.ndim == 2:
@@ -76,13 +81,13 @@ def _validate_and_convert_image(img, expected_shape=(3, 32, 32)):
 class InferenceHead(nn.Module):
     """
     MLP head appended after a frozen BottomModel.
-    Improved architecture với BatchNorm để training ổn định hơn.
+    KHONG dung BatchNorm (gay unstable khi labeled/unlabeled batch size khac nhau).
+    Dung Dropout lam regularizer thay the.
 
     Architecture:
-        Linear(128 → 512) → BN → ReLU → Dropout(0.3)
-        Linear(512 → 256) → BN → ReLU → Dropout(0.3)
-        Linear(256 → 128) → BN → ReLU
-        Linear(128 → 10)
+        Linear(128 -> 512) -> ReLU -> Dropout(0.4)
+        Linear(512 -> 256) -> ReLU -> Dropout(0.4)
+        Linear(256 -> 10)
     """
 
     def __init__(
@@ -90,31 +95,19 @@ class InferenceHead(nn.Module):
         embedding_dim: int = 128,
         hidden_dim: int = 512,
         num_classes: int = 10,
-        dropout_rate: float = 0.3,
+        dropout_rate: float = 0.4,
     ):
         super(InferenceHead, self).__init__()
 
-        self.layer1 = nn.Sequential(
+        self.net = nn.Sequential(
             nn.Linear(embedding_dim, hidden_dim),
-            nn.BatchNorm1d(hidden_dim),
             nn.ReLU(inplace=True),
             nn.Dropout(p=dropout_rate),
-        )
-
-        self.layer2 = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.BatchNorm1d(hidden_dim // 2),
             nn.ReLU(inplace=True),
             nn.Dropout(p=dropout_rate),
+            nn.Linear(hidden_dim // 2, num_classes),
         )
-
-        self.layer3 = nn.Sequential(
-            nn.Linear(hidden_dim // 2, embedding_dim),
-            nn.BatchNorm1d(embedding_dim),
-            nn.ReLU(inplace=True),
-        )
-
-        self.output_layer = nn.Linear(embedding_dim, num_classes)
 
         self._init_weights()
 
@@ -126,11 +119,7 @@ class InferenceHead(nn.Module):
                     nn.init.zeros_(m.bias)
 
     def forward(self, embedding: torch.Tensor) -> torch.Tensor:
-        x = self.layer1(embedding)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        logits = self.output_layer(x)
-        return logits
+        return self.net(embedding)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -238,7 +227,7 @@ def generate_auxiliary_labels(
         imgs, labels = [], []
         for idx in indices:
             img, lbl = dataset[int(idx)]
-            img = _validate_and_convert_image(img, expected_shape=(3, 32, 32))
+            img = _validate_and_convert_image(img, expected_shape=img.shape if isinstance(img, torch.Tensor) else (3, 32, 32))
             imgs.append(img)
             labels.append(int(lbl))
         return torch.stack(imgs), torch.tensor(labels, dtype=torch.long)
@@ -272,11 +261,6 @@ def train_inference_head(
     device: str = "cuda",
     warmup_epochs: int = 20,
 ) -> nn.Module:
-    """
-    Train InferenceHead dung loop theo unlabeled data.
-    Loop chinh chay theo unlabeled_loader (9800 samples),
-    labeled data duoc cycle lai - dam bao unlabeled duoc hoc day du.
-    """
     bottom_model   = bottom_model.to(device)
     inference_head = inference_head.to(device)
 
@@ -285,45 +269,23 @@ def train_inference_head(
     bottom_model.eval()
 
     optimizer = optim.Adam(inference_head.parameters(), lr=lr, weight_decay=1e-4)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
-
-    ce_loss  = nn.CrossEntropyLoss()
-    mse_loss = nn.MSELoss()
+    # StepLR: giam lr 50% moi 1/3 so epochs - on dinh hon CosineAnnealing voi it epochs
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=max(1, epochs//3), gamma=0.5)
 
     images_X, labels_X = X
     images_U, _        = U
     num_classes        = 10
 
-    # Pre-compute ALL embeddings once (frozen model, save time)
-    print("  Pre-computing embeddings...")
-    bottom_model.eval()
-    with torch.no_grad():
-        # Encode labeled
-        emb_X_all = []
-        for i in range(0, len(images_X), batch_size):
-            batch = images_X[i:i+batch_size].to(device)
-            emb_X_all.append(bottom_model(_split_client_half(batch)).cpu())
-        emb_X_all = torch.cat(emb_X_all, dim=0)  # [200, 128]
+    # DataLoaders tren RAW IMAGES (khong pre-compute) de tranh overfitting
+    labeled_ds   = TensorDataset(images_X, labels_X)
+    unlabeled_ds = TensorDataset(images_U)
 
-        # Encode unlabeled
-        emb_U_all = []
-        for i in range(0, len(images_U), 256):
-            batch = images_U[i:i+256].to(device)
-            emb_U_all.append(bottom_model(_split_client_half(batch)).cpu())
-        emb_U_all = torch.cat(emb_U_all, dim=0)  # [9800, 128]
-    print(f"  Embeddings ready: X={emb_X_all.shape}, U={emb_U_all.shape}")
-
-    # DataLoaders tren embeddings (nhanh hon qua image)
-    # Loop chinh chay theo UNLABELED (so luong lon hon)
-    labeled_ds   = TensorDataset(emb_X_all, labels_X)
-    unlabeled_ds = TensorDataset(emb_U_all)
-
+    # Loop chinh theo UNLABELED, labeled duoc cycle lai
     unlabeled_loader = DataLoader(unlabeled_ds, batch_size=batch_size, shuffle=True, drop_last=True)
-    # Labeled loader se duoc cycle
-    labeled_loader   = DataLoader(labeled_ds,   batch_size=min(batch_size, len(images_X)),
+    labeled_loader   = DataLoader(labeled_ds, batch_size=min(batch_size, len(images_X)),
                                   shuffle=True, drop_last=False)
 
-    sep = chr(8212) * 60
+    sep = "-" * 60
     print(f"\n{sep}")
     print(f"  MixMatch Training - {epochs} epochs")
     print(f"  Labeled   : {len(images_X)} samples  ({len(labeled_loader)} batches/epoch)")
@@ -332,56 +294,74 @@ def train_inference_head(
     print(f"  Device    : {device}")
     print(f"{sep}\n")
 
+    ce_loss  = nn.CrossEntropyLoss()
+    mse_loss = nn.MSELoss()
+
+    # Embedding-space noise augmentation
+    def augment_emb(emb, noise_std=0.1):
+        return emb + torch.randn_like(emb) * noise_std
+
     for epoch in range(1, epochs + 1):
         inference_head.train()
-
         epoch_loss_x = 0.0
         epoch_loss_u = 0.0
         n_batches    = 0
 
         labeled_iter = iter(labeled_loader)
 
-        # Loop chinh theo UNLABELED
-        for (emb_u_batch,) in unlabeled_loader:
-            # Lay labeled batch (cycle)
+        for (imgs_u,) in unlabeled_loader:
             try:
-                emb_x_batch, labels_x_batch = next(labeled_iter)
+                imgs_x, labels_x = next(labeled_iter)
             except StopIteration:
                 labeled_iter = iter(labeled_loader)
-                emb_x_batch, labels_x_batch = next(labeled_iter)
+                imgs_x, labels_x = next(labeled_iter)
 
-            emb_u_batch    = emb_u_batch.to(device)
-            emb_x_batch    = emb_x_batch.to(device)
-            labels_x_batch = labels_x_batch.to(device)
+            imgs_x   = imgs_x.to(device)
+            labels_x = labels_x.to(device)
+            imgs_u   = imgs_u.to(device)
 
-            # ── Pseudo-labels cho unlabeled ───────────────────
+            # Encode qua bottom_model (frozen)
             with torch.no_grad():
-                inference_head.eval()
-                probs_u = F.softmax(inference_head(emb_u_batch), dim=1)
-                pseudo_u = sharpen(probs_u, temperature).detach()
-                inference_head.train()
+                emb_x = bottom_model(_split_client_half(imgs_x)).detach()
+                emb_u = bottom_model(_split_client_half(imgs_u)).detach()
 
-            # ── Supervised loss ───────────────────────────────
-            logits_x = inference_head(emb_x_batch)
-            loss_x   = ce_loss(logits_x, labels_x_batch)
+            # Augment: noise + requires_grad=True de gradient chay qua InferenceHead
+            emb_x_aug = (emb_x + torch.randn_like(emb_x) * 0.1).requires_grad_(True)
+            emb_u_aug = (emb_u + torch.randn_like(emb_u) * 0.1).requires_grad_(True)
 
-            # ── Consistency loss (chi sau warmup) ─────────────
-            logits_u = inference_head(emb_u_batch)
-            probs_u2 = F.softmax(logits_u, dim=1)
-            loss_u   = mse_loss(probs_u2, pseudo_u)
+            # Supervised loss
+            logits_x = inference_head(emb_x_aug)
+            loss_x   = ce_loss(logits_x, labels_x)
 
-            if epoch <= warmup_epochs:
-                total_loss = loss_x
-            else:
+            # Consistency loss (sau warmup)
+            if epoch > warmup_epochs:
+                with torch.no_grad():
+                    inference_head.eval()
+                    probs_u = F.softmax(inference_head(emb_u), dim=1)
+                    pseudo_u = sharpen(probs_u, temperature).detach()
+                    inference_head.train()
+
+                probs_u_aug = F.softmax(inference_head(emb_u_aug), dim=1)
+                loss_u = mse_loss(probs_u_aug, pseudo_u)
                 total_loss = loss_x + lambda_u * loss_u
+            else:
+                loss_u     = torch.tensor(0.0)
+                total_loss = loss_x
 
             optimizer.zero_grad()
             total_loss.backward()
+
+            # DEBUG: in grad norm de xac nhan gradient co chay khong
+            if n_batches == 0 and epoch <= 3:
+                grad_norms = [p.grad.norm().item() for p in inference_head.parameters() if p.grad is not None]
+                no_grad    = sum(1 for p in inference_head.parameters() if p.grad is None)
+                print(f"  [GRAD DEBUG] epoch={epoch} | params_with_grad={len(grad_norms)} | no_grad={no_grad} | max_grad_norm={max(grad_norms) if grad_norms else 0:.6f}")
+
             nn.utils.clip_grad_norm_(inference_head.parameters(), max_norm=5.0)
             optimizer.step()
 
             epoch_loss_x += loss_x.item()
-            epoch_loss_u += loss_u.item()
+            epoch_loss_u += loss_u.item() if isinstance(loss_u, torch.Tensor) else loss_u
             n_batches    += 1
 
         scheduler.step()
@@ -390,17 +370,12 @@ def train_inference_head(
         avg_lu = epoch_loss_u / max(n_batches, 1)
 
         if epoch % 10 == 0 or epoch <= 5:
-            warmup_tag = " [WARMUP]" if epoch <= warmup_epochs else ""
-            print(
-                f"Epoch {epoch:3d}/{epochs}{warmup_tag} — "
-                f"Loss_X: {avg_lx:.4f}, "
-                f"Loss_U: {avg_lu:.4f}"
-            )
+            tag = " [WARMUP]" if epoch <= warmup_epochs else ""
+            print(f"Epoch {epoch:3d}/{epochs}{tag} -- Loss_X: {avg_lx:.4f}, Loss_U: {avg_lu:.4f}")
 
     print(f"\n{sep}")
     print("  Training complete.")
     print(f"{sep}\n")
-
     return inference_head
 
 
