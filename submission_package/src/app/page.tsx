@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { Layers, BarChart3, Shield, Target, LockKeyhole } from 'lucide-react';
 import OnboardingGuide from '@/components/OnboardingGuide';
+import LiveDemoLink from '@/components/LiveDemoLink';
 
 export default function Home() {
   return (
@@ -18,6 +19,12 @@ export default function Home() {
           <p className="text-lg text-gray-600">
             Explore vertical federated learning attacks and defense mechanisms on real CIFAR-10 experiments
           </p>
+          <div className="mt-5 flex items-center gap-3 flex-wrap">
+            <LiveDemoLink />
+            <span className="text-sm text-gray-500">
+              Open the live deployed demo or run it locally on your machine.
+            </span>
+          </div>
         </div>
 
         {/* Quick Stats */}

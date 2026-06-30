@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Home, ChevronRight, SplitSquareHorizontal } from 'lucide-react';
+import LiveDemoLink from '@/components/LiveDemoLink';
 
 interface NavItem {
   label: string;
@@ -52,23 +53,27 @@ export default function NavigationBar() {
         </Link>
 
         {/* Breadcrumb */}
-        <div className="flex items-center gap-2 text-sm">
-          {breadcrumbs.map((item, index) => (
-            <div key={item.href} className="flex items-center gap-2">
-              {index > 0 && <ChevronRight className="w-4 h-4 text-gray-400" />}
-              {index === breadcrumbs.length - 1 ? (
-                <span className="border-b border-gray-900 px-1 py-1 font-medium text-gray-950">{item.label}</span>
-              ) : (
-                <Link 
-                  href={item.href} 
-                  className="text-gray-600 hover:text-gray-950 transition-colors flex items-center gap-1 px-1 py-1"
-                >
-                  {index === 0 && <Home className="w-4 h-4" />}
-                  <span>{item.label}</span>
-                </Link>
-              )}
-            </div>
-          ))}
+        <div className="flex items-center gap-3 text-sm">
+          <div className="flex items-center gap-2">
+            {breadcrumbs.map((item, index) => (
+              <div key={item.href} className="flex items-center gap-2">
+                {index > 0 && <ChevronRight className="w-4 h-4 text-gray-400" />}
+                {index === breadcrumbs.length - 1 ? (
+                  <span className="border-b border-gray-900 px-1 py-1 font-medium text-gray-950">{item.label}</span>
+                ) : (
+                  <Link 
+                    href={item.href} 
+                    className="text-gray-600 hover:text-gray-950 transition-colors flex items-center gap-1 px-1 py-1"
+                  >
+                    {index === 0 && <Home className="w-4 h-4" />}
+                    <span>{item.label}</span>
+                  </Link>
+                )}
+              </div>
+            ))}
+          </div>
+
+          <LiveDemoLink />
         </div>
       </div>
     </nav>
