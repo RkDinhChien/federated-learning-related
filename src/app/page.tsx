@@ -22,7 +22,7 @@ export default function Home() {
           <div className="mt-5 flex items-center gap-3 flex-wrap">
             <LiveDemoLink />
             <span className="text-sm text-gray-500">
-              Open the live deployed demo or run it locally on your machine.
+              The displayed URL is the current Vercel deployment link.
             </span>
           </div>
         </div>

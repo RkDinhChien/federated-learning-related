@@ -56,6 +56,22 @@ export default function ComparePageClient({ runs }: ComparePageClientProps) {
     );
   };
 
+  if (runs.length === 0) {
+    return (
+      <div className="min-h-screen bg-gray-50">
+        <main className="max-w-4xl mx-auto px-6 py-16">
+          <div className="rounded-2xl border border-gray-200 bg-white p-8 text-center shadow-sm">
+            <BarChart3 className="mx-auto mb-4 h-12 w-12 text-indigo-600" />
+            <h2 className="text-2xl font-semibold text-gray-900 mb-2">No comparison data bundled</h2>
+            <p className="text-sm text-gray-600">
+              The experiment JSON files are not present in this deployment, so the compare page shows a safe fallback instead of breaking the build.
+            </p>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gray-50">
 

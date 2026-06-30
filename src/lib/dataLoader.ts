@@ -3,14 +3,24 @@ import path from 'path';
 import type { DataIndex, RunData, RunMeta, IterationPoint, RunStatistics } from '@/types';
 
 const DATA_DIR = path.join(process.cwd(), 'data', 'SR_MNIST', 'Centralized_n=10_b=1');
+const EMPTY_DATA_INDEX: DataIndex = {
+  converter_version: 'fallback-empty',
+  generated_at: new Date(0).toISOString(),
+  partitions: {},
+};
 
 /**
  * Load the main index file that maps all experiments
  */
 export async function loadDataIndex(): Promise<DataIndex> {
   const indexPath = path.join(DATA_DIR, 'index.json');
-  const content = await fs.readFile(indexPath, 'utf-8');
-  return JSON.parse(content);
+  try {
+    const content = await fs.readFile(indexPath, 'utf-8');
+    return JSON.parse(content);
+  } catch (error) {
+    console.warn(`Data index not found at ${indexPath}; using empty fallback for build-time rendering.`);
+    return EMPTY_DATA_INDEX;
+  }
 }
 
 /**

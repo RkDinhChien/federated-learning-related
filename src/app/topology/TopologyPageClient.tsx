@@ -90,6 +90,19 @@ export default function TopologyPageClient({ runs, partitions }: TopologyPageCli
 
   // Early return AFTER all hooks
   if (!mounted || !selectedRun) {
+    if (mounted && runs.length === 0) {
+      return (
+        <div className="min-h-screen bg-gray-50 flex items-center justify-center px-6">
+          <div className="max-w-lg rounded-2xl border border-gray-200 bg-white p-8 text-center shadow-sm">
+            <h2 className="text-xl font-semibold text-gray-900 mb-2">No experiment data available</h2>
+            <p className="text-sm text-gray-600">
+              The SR_MNIST dataset files are not included in this deployment, so the topology page shows this fallback state instead of failing the build.
+            </p>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="text-gray-600">Loading...</div>
